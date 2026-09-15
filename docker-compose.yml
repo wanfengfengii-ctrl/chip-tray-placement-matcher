@@ -23,7 +23,9 @@ services:
   #   docker compose --profile verify up --build --abort-on-container-exit --exit-code-from verify
   verify:
     build: .
-    image: chip-tray-inspection-api
+    # Distinct image name: sharing one name between two buildable services
+    # makes the concurrent builds conflict and the acceptance run fail.
+    image: chip-tray-inspection-verify
     profiles: ["verify"]
     depends_on:
       api:
