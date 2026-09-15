@@ -91,6 +91,8 @@ curl -sS -F "file=@payload.json;type=application/json" \
   `min_total_cost` 仅基于有效穴位；数组顺序重排不影响结果（响应字节级
   一致）；
 - 字段缺省时请求与响应与旧版**完全一致**（响应中不会出现该字段）。
+  注意显式传 `null` 不等价于缺省，会被当作字段校验错误整体拒绝（缺省
+  才表示"全部穴位参与"）；
 
 ```bash
 cat > payload-excluded.json <<'JSON'
@@ -127,7 +129,7 @@ curl -sS -F "file=@payload-excluded.json;type=application/json" \
 | `tolerance` | int | 0–500 | 容差 t，距离 ≤ t 才允许配对 |
 | `sockets` | array | ≤ 80 个 | 期望穴位点 |
 | `detections` | array | ≤ 80 个 | 视觉检测点 |
-| `excluded_socket_ids` | string[]? | 可选，≤ 80 个，无重复且均为本批穴位编号 | 临时停用、不参与配对的穴位编号；缺省表示全部穴位参与 |
+| `excluded_socket_ids` | string[]? | 可选，≤ 80 个，无重复且均为本批穴位编号；显式 `null` 拒绝 | 临时停用、不参与配对的穴位编号；缺省（不传）表示全部穴位参与 |
 | 点对象 `id` | string | 1–64 字符，批内唯一 | 点编号 |
 | 点对象 `x` / `y` | int | 0–10000 | 整数坐标 |
 

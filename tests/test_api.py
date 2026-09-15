@@ -436,6 +436,30 @@ class TestExcludedSockets:
         details = response.json()["error"]["details"]
         assert details[0]["loc"] == ["excluded_socket_ids"]
 
+    def test_explicit_null_rejected_but_absent_field_keeps_legacy(self):
+        # A declared-but-null exclusion is ambiguous and must be rejected as a
+        # field error (it is NOT equivalent to omitting the field).
+        payload = self.four_socket_payload()
+        payload["detections"].append({"id": "D3", "x": 20, "y": 0})
+        payload["detections"].append({"id": "D4", "x": 30, "y": 0})
+        payload["excluded_socket_ids"] = None
+        response = post(payload)
+        assert response.status_code == 400
+        body = response.json()
+        assert body["error"]["code"] == "VALIDATION_ERROR"
+        assert len(body["error"]["details"]) == 1
+        detail = body["error"]["details"][0]
+        assert detail["loc"] == ["excluded_socket_ids"]
+        assert detail["type"] == "excluded_socket_ids_type"
+        assert "pairs" not in body
+
+        # The same batch with the field removed processes normally.
+        del payload["excluded_socket_ids"]
+        legacy = post(payload)
+        assert legacy.status_code == 200
+        assert legacy.json()["status"] == "PASS"
+        assert b"excluded_socket_ids" not in legacy.content
+
     def test_empty_exclusion_array_is_declared_but_excludes_nothing(self):
         payload = self.four_socket_payload()
         payload["excluded_socket_ids"] = []

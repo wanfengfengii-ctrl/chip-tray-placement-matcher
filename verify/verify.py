@@ -310,6 +310,25 @@ def main() -> int:
         expect_excluded_error("excluded.unknown_id_rejected", ["S4", "NOPE"])
         expect_excluded_error("excluded.duplicate_id_rejected", ["S3", "S3"])
 
+        # An explicit null is an ambiguous declaration, not "exclude none":
+        # it must be rejected at the field (omitting the field is the legacy
+        # "all sockets participate" contract).
+        null_decl = dict(excl, excluded_socket_ids=None)
+        rr = post(client, null_decl)
+        try:
+            nbody = rr.json()
+        except ValueError:
+            nbody = {}
+        ndetails = nbody.get("error", {}).get("details", [])
+        check(
+            "excluded.explicit_null_rejected",
+            rr.status_code == 400
+            and nbody.get("error", {}).get("code") == "VALIDATION_ERROR"
+            and [d.get("loc") for d in ndetails] == [["excluded_socket_ids"]]
+            and "pairs" not in nbody,
+            f"status={rr.status_code} body={nbody}",
+        )
+
         # Legacy request without the new field: response must not contain it
         # at all (existing checks 1/5 already validate the full bodies).
         legacy = {

@@ -9,7 +9,9 @@ Validation rules (any violation rejects the whole request):
 * at most 80 points per category;
 * ``excluded_socket_ids`` is an optional list of socket ids temporarily
   taken out of service (line changeover / socket maintenance): it must not
-  contain duplicates and every id must reference a socket of this batch;
+  contain duplicates and every id must reference a socket of this batch,
+  and an explicit JSON null is rejected (only omission means "no
+  exclusions");
 * unknown fields are forbidden everywhere.
 """
 
@@ -73,8 +75,17 @@ class InspectionPayload(BaseModel):
     def _validate_excluded_socket_ids(
         cls, value: Optional[list[str]], info: ValidationInfo
     ) -> Optional[list[str]]:
+        # An explicit JSON null is not the same as omitting the field: the
+        # former is an ambiguous declaration and is rejected at the field, the
+        # latter keeps the legacy behaviour. Pydantic skips validators for
+        # default values, so the default ``None`` (field absent) never reaches
+        # here, while an explicit ``null`` does.
         if value is None:
-            return None
+            raise PydanticCustomError(
+                "excluded_socket_ids_type",
+                "excluded_socket_ids must be an array of socket id strings; "
+                "null is not allowed (omit the field to keep all sockets)",
+            )
 
         # Duplicates are checked first, then membership in this batch's
         # socket set. Either failure rejects the whole request and the error
