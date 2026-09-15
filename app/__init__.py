@@ -1,0 +1,1 @@
+"""Chip tray inspection backend."""
