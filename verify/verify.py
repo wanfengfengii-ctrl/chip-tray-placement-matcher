@@ -222,6 +222,113 @@ def main() -> int:
             code="FILE_TOO_LARGE",
         )
 
+        # 7. Temporarily deactivated sockets (excluded_socket_ids).
+        #    A line changeover / socket maintenance batch declares sockets
+        #    that do not participate in pairing; counts and matching run on
+        #    the effective set, and the sorted ids are echoed on PASS.
+        excl = {
+            "batch_id": "VERIFY-EXCL",
+            "tolerance": 10,
+            "sockets": [
+                {"id": "S1", "x": 0, "y": 0},
+                {"id": "S2", "x": 10, "y": 0},
+                {"id": "S3", "x": 20, "y": 0},
+                {"id": "S4", "x": 30, "y": 0},
+            ],
+            "detections": [
+                {"id": "D1", "x": 0, "y": 0},
+                {"id": "D2", "x": 10, "y": 0},
+            ],
+            # Declared out of order on purpose.
+            "excluded_socket_ids": ["S4", "S3"],
+        }
+        r = post(client, excl)
+        body = r.json()
+        check(
+            "excluded.pass_on_effective_set",
+            r.status_code == 200
+            and body.get("status") == "PASS"
+            and body.get("min_total_cost") == 0
+            and body.get("pairs")
+            == [
+                {"socket_id": "S1", "detection_id": "D1"},
+                {"socket_id": "S2", "detection_id": "D2"},
+            ],
+            str(body),
+        )
+        check(
+            "excluded.echo_sorted_ids",
+            body.get("excluded_socket_ids") == ["S3", "S4"],
+            str(body.get("excluded_socket_ids")),
+        )
+
+        # Reordering the exclusion array (and point arrays) gives byte-equal
+        # output, including for the echoed excluded_socket_ids field.
+        excl_shuffled = dict(excl)
+        excl_shuffled["excluded_socket_ids"] = ["S3", "S4"]
+        excl_shuffled["sockets"] = list(reversed(excl["sockets"]))
+        check(
+            "excluded.byte_identical_on_reorder",
+            post(client, excl_shuffled).content == r.content,
+        )
+
+        # Effective socket count != detection count -> COUNT_MISMATCH,
+        # counted on the remaining sockets, with no echo and no pairs.
+        excl_mismatch = dict(excl, excluded_socket_ids=["S3"])
+        r = post(client, excl_mismatch)
+        body = r.json()
+        check(
+            "excluded.count_mismatch_on_effective_set",
+            r.status_code == 200
+            and body.get("status") == "COUNT_MISMATCH"
+            and body.get("socket_count") == 3
+            and body.get("detection_count") == 2
+            and "excluded_socket_ids" not in body
+            and "pairs" not in body,
+            str(body),
+        )
+
+        # Illegal excluded ids reject the whole request, located at the field.
+        def expect_excluded_error(name, ids):
+            bad = dict(excl, excluded_socket_ids=ids)
+            rr = post(client, bad)
+            try:
+                bbody = rr.json()
+            except ValueError:
+                bbody = {}
+            details = bbody.get("error", {}).get("details", [])
+            locs = [d.get("loc") for d in details]
+            check(
+                name,
+                rr.status_code == 400
+                and bbody.get("error", {}).get("code") == "VALIDATION_ERROR"
+                and locs == [["excluded_socket_ids"]]
+                and "pairs" not in bbody,
+                f"status={rr.status_code} body={bbody}",
+            )
+
+        expect_excluded_error("excluded.unknown_id_rejected", ["S4", "NOPE"])
+        expect_excluded_error("excluded.duplicate_id_rejected", ["S3", "S3"])
+
+        # Legacy request without the new field: response must not contain it
+        # at all (existing checks 1/5 already validate the full bodies).
+        legacy = {
+            "batch_id": "VERIFY-LEGACY",
+            "tolerance": 10,
+            "sockets": [
+                {"id": "S1", "x": 0, "y": 0},
+                {"id": "S2", "x": 10, "y": 0},
+            ],
+            "detections": [
+                {"id": "D1", "x": 9, "y": 0},
+                {"id": "D2", "x": 0, "y": 0},
+            ],
+        }
+        check(
+            "excluded.legacy_response_unchanged",
+            b"excluded_socket_ids" not in post(client, legacy).content,
+        )
+
     if _failures:
         print(f"\n{len(_failures)} acceptance check(s) FAILED: {', '.join(_failures)}")
         return 1

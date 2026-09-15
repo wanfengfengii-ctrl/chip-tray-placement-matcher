@@ -105,6 +105,17 @@ async def inspect(file: UploadFile = File(...)) -> Any:
     sockets = payload.sockets
     detections = payload.detections
 
+    # Sockets temporarily taken out of service are removed (by id, sorted)
+    # before counting and matching. The field is omitted entirely on every
+    # failure so that no partial pairing or context is ever leaked, and when
+    # the request did not declare the field the responses stay byte-identical
+    # to the legacy contract.
+    excluded_ids = payload.excluded_socket_ids
+    if excluded_ids is not None:
+        excluded_sorted = sorted(excluded_ids)
+        excluded_set = set(excluded_sorted)
+        sockets = [point for point in sockets if point.id not in excluded_set]
+
     if len(sockets) != len(detections):
         return {
             "status": "COUNT_MISMATCH",
@@ -121,7 +132,7 @@ async def inspect(file: UploadFile = File(...)) -> Any:
         }
 
     total_cost, pairs = result
-    return {
+    response = {
         "status": "PASS",
         "batch_id": payload.batch_id,
         "min_total_cost": total_cost,
@@ -130,3 +141,7 @@ async def inspect(file: UploadFile = File(...)) -> Any:
             for socket_id, detection_id in pairs
         ],
     }
+    if excluded_ids is not None:
+        # Echoed after pairs, in sorted order (upload order never matters).
+        response["excluded_socket_ids"] = excluded_sorted
+    return response

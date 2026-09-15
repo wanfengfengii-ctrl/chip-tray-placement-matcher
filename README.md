@@ -50,6 +50,8 @@ API_PORT=9000 docker compose up    # 通过 API_PORT 覆盖宿主机端口
 - `tolerance`：JSON 整数，范围 `0..500`，配对要求曼哈顿距离 **≤ t**
 - 每个点的 `id` 为非空字符串，**整个批次内唯一**（两类点合并计算）
 - 每类点最多 **80** 个；不允许任何未定义字段（顶层或点对象内）
+- 可选的 `excluded_socket_ids` 为字符串数组，**不得有重复编号**，且每个
+  编号都必须属于本批 `sockets`（最多 80 个）
 - 违反任一约束时整个请求被拒绝（见下文错误表），绝不返回部分结果
 
 调用示例：
@@ -74,6 +76,49 @@ curl -sS -F "file=@payload.json;type=application/json" \
   http://localhost:8000/api/v1/inspect
 ```
 
+#### 临时停用穴位（产线换型 / 穴位检修）
+
+换型或检修时工艺人员会临时停用少量穴位。此时无需另建托盘模板，在同一批
+上传请求中用可选字段 `excluded_socket_ids`（字符串数组）声明**本批不参与
+配对的穴位编号**即可：
+
+- 列表中**不允许重复**，且每个编号都必须是本批 `sockets` 中存在的穴位
+  （检测点编号、未知编号一律拒绝）；
+- 服务按编号排序后移除这些穴位，再以**剩余穴位数量**与检测点数量比较，
+  数量不等仍返回 `COUNT_MISMATCH`，数量相等则只在有效穴位与检测点之间
+  求解最优配对；
+- 成功响应回显**排序后**的 `excluded_socket_ids`，`pairs` 与
+  `min_total_cost` 仅基于有效穴位；数组顺序重排不影响结果（响应字节级
+  一致）；
+- 字段缺省时请求与响应与旧版**完全一致**（响应中不会出现该字段）。
+
+```bash
+cat > payload-excluded.json <<'JSON'
+{
+  "batch_id": "BATCH-20260915-002",
+  "tolerance": 10,
+  "sockets": [
+    {"id": "S1", "x": 0,  "y": 0},
+    {"id": "S2", "x": 10, "y": 0},
+    {"id": "S3", "x": 20, "y": 0}
+  ],
+  "detections": [
+    {"id": "D1", "x": 0,  "y": 0},
+    {"id": "D2", "x": 10, "y": 0}
+  ],
+  "excluded_socket_ids": ["S3"]
+}
+JSON
+
+curl -sS -F "file=@payload-excluded.json;type=application/json" \
+  http://localhost:8000/api/v1/inspect
+# {"status":"PASS",...,"pairs":[{"socket_id":"S1",...},{"socket_id":"S2",...}],
+#  "excluded_socket_ids":["S3"]}
+```
+
+> 注意：业务失败（`COUNT_MISMATCH` / `POSITION_MISMATCH`）与校验错误响应
+> 均保持各自原有结构，不回显该字段，也绝不携带任何部分配对。
+
 ### 请求字段
 
 | 字段 | 类型 | 约束 | 说明 |
@@ -82,6 +127,7 @@ curl -sS -F "file=@payload.json;type=application/json" \
 | `tolerance` | int | 0–500 | 容差 t，距离 ≤ t 才允许配对 |
 | `sockets` | array | ≤ 80 个 | 期望穴位点 |
 | `detections` | array | ≤ 80 个 | 视觉检测点 |
+| `excluded_socket_ids` | string[]? | 可选，≤ 80 个，无重复且均为本批穴位编号 | 临时停用、不参与配对的穴位编号；缺省表示全部穴位参与 |
 | 点对象 `id` | string | 1–64 字符，批内唯一 | 点编号 |
 | 点对象 `x` / `y` | int | 0–10000 | 整数坐标 |
 
@@ -104,6 +150,23 @@ curl -sS -F "file=@payload.json;type=application/json" \
 `pairs` 为完整配对，**按穴位编号升序排列**；将文件内数组重新排序后重新
 上传，响应体字节级一致。
 
+当请求通过 `excluded_socket_ids` 声明了停用穴位时，成功响应末尾额外回显
+**排序后**的 `excluded_socket_ids`；`pairs` 只覆盖剩余有效穴位，
+`min_total_cost` 也仅统计这些配对：
+
+```json
+{
+  "status": "PASS",
+  "batch_id": "BATCH-20260915-002",
+  "min_total_cost": 0,
+  "pairs": [
+    {"socket_id": "S1", "detection_id": "D1"},
+    {"socket_id": "S2", "detection_id": "D2"}
+  ],
+  "excluded_socket_ids": ["S3"]
+}
+```
+
 ### 业务失败（HTTP 200，不泄露任何部分匹配）
 
 ```json
@@ -114,8 +177,10 @@ curl -sS -F "file=@payload.json;type=application/json" \
 {"status": "POSITION_MISMATCH", "batch_id": "..."}
 ```
 
-- `COUNT_MISMATCH`：两类点数量不同，直接返回，不做匹配。
+- `COUNT_MISMATCH`：两类点数量不同，直接返回，不做匹配。声明了停用穴位时，
+  `socket_count` 为**移除停用穴位后的有效穴位数量**。
 - `POSITION_MISMATCH`：数量相等但不存在满足容差的一对一完美匹配。
+- 业务失败响应不回显 `excluded_socket_ids`，保持原有结构不变。
 
 ### 请求错误（整体拒绝）
 
@@ -127,7 +192,7 @@ curl -sS -F "file=@payload.json;type=application/json" \
 
 | HTTP | `error.code` | 触发条件 |
 | --- | --- | --- |
-| 400 | `VALIDATION_ERROR` | 重复编号、非整数坐标、越界值、未知字段、缺字段、超过 80 个点等 |
+| 400 | `VALIDATION_ERROR` | 重复编号、非整数坐标、越界值、未知字段、缺字段、超过 80 个点、`excluded_socket_ids` 含重复或非本批穴位编号等（错误定位到对应字段） |
 | 400 | `INVALID_JSON` | 文件不是合法的 UTF-8 JSON |
 | 413 | `FILE_TOO_LARGE` | 文件超过 1 MiB |
 | 500 | `INTERNAL_ERROR` | 未预期的服务端错误 |
@@ -161,14 +226,15 @@ pytest
 - **容差边界**：距离恰好等于 `t` 可配对、大 1 即失败、`t = 0` 时要求
   坐标完全重合。
 
-`tests/test_api.py` 覆盖接口契约、各类校验错误、1 MiB 边界以及重排后
-响应字节级一致。
+`tests/test_api.py` 覆盖接口契约、各类校验错误、1 MiB 边界、重排后
+响应字节级一致，以及临时停用穴位（停用后通过且重排一致、按有效穴位数量
+判断 `COUNT_MISMATCH`、非法/重复编号定位拦截、旧请求字节级不变）。
 
 ## 一次性验收服务 verify
 
 Compose 默认只启动 API。`verify` 服务等待 API 健康后执行一组黑盒验收
 （最优匹配、并列裁决、容差边界、数量不匹配、各类非法输入、超限文件、
-重排字节级一致），全部通过则以退出码 0 结束：
+重排字节级一致、临时停用穴位），全部通过则以退出码 0 结束：
 
 ```bash
 docker compose --profile verify up --build --abort-on-container-exit --exit-code-from verify
